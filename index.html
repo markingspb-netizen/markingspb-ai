@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Markingspb AI — video editor</title>
+  <meta name="description" content="Markingspb AI: edit videos by writing what you want." />
+  <link rel="icon" href="/logo.svg" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand"><img src="/logo.svg" alt="" width="30" height="30" /> <span>Markingspb <b>AI</b></span></div>
+    <div class="lang">
+      <button data-lang="ru" class="on">RU</button><button data-lang="en">EN</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="stage">
+      <div class="screen" id="screen">
+        <video id="player" controls playsinline hidden></video>
+        <label class="drop" id="drop">
+          <input type="file" id="videoInput" accept="video/*" hidden />
+          <div class="drop-icon">🎬</div>
+          <div data-t="drop"></div>
+          <small data-t="dropHint"></small>
+        </label>
+        <div class="busy" id="busy" hidden>
+          <div class="spinner"></div>
+          <div id="busyText"></div>
+          <div class="bar"><i id="bar"></i></div>
+        </div>
+      </div>
+      <div class="tools">
+        <label class="btn"><input type="file" id="videoInput2" accept="video/*" hidden />📁 <span data-t="newVideo"></span></label>
+        <label class="btn"><input type="file" id="musicInput" accept="audio/*" hidden />🎵 <span id="musicLabel" data-t="music"></span></label>
+        <button class="btn" id="undoBtn" disabled>↩ <span data-t="undo"></span></button>
+        <a class="btn primary" id="downloadBtn" aria-disabled="true">⬇ <span data-t="download"></span></a>
+      </div>
+      <div class="info" id="info"></div>
+    </section>
+
+    <section class="chat">
+      <div class="messages" id="messages"></div>
+      <div class="chips" id="chips"></div>
+      <form class="composer" id="form">
+        <textarea id="text" rows="2" data-tp="placeholder"></textarea>
+        <button type="submit" class="send" id="sendBtn" aria-label="Send">➤</button>
+      </form>
+    </section>
+  </main>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
