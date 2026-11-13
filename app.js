@@ -5,6 +5,7 @@
 import { FFmpeg } from '/vendor/ffmpeg/index.js';
 import { fetchFile } from '/vendor/util/index.js';
 import { buildEdit, splitAtSubtitles, subtitleOps } from '/pipeline.js';
+import { initCloud, cloudReady, currentUser, onUser, signIn, signOut, publishSite } from '/cloud.js';
 
 // ---------- texts (RU / EN) ----------
 const T = {
@@ -12,8 +13,12 @@ const T = {
     newChat: 'Новый чат',
     privacy: 'Видео не загружается на сервер — монтаж идёт прямо в вашем браузере.',
     welcomeTitle: 'Чем могу помочь?',
-    welcomeSub: 'Спросите что угодно — или прикрепите видео 📎, и я его смонтирую.',
+    welcomeSub: 'Спросите что угодно, попросите сделать сайт — или прикрепите видео 📎, и я его смонтирую.',
     recent: 'Чаты', copy: 'Копировать', copied: 'Скопировано ✓', deleteChat: 'Удалить чат',
+    siteOpen: 'Открыть', siteCode: 'Код', siteDownload: 'HTML', siteClose: 'Закрыть', building: 'Создаю сайт… это может занять до минуты',
+    signIn: 'Войти через Google', signOut: 'Выйти', publish: 'Опубликовать', republish: 'Обновить сайт', publishing: 'Публикую…',
+    published: 'Сайт опубликован:', publishError: 'Не получилось опубликовать. Попробуйте ещё раз.', publishRules: 'Публикация не настроена: проверьте правила Firestore.',
+    notSetup: 'Публикация ещё не настроена (нужен FIREBASE_CONFIG на Render).', signInError: 'Не получилось войти. Разрешите всплывающие окна и попробуйте снова.', needSignIn: 'Чтобы опубликовать сайт, войдите через Google.', copyLink: 'Копировать ссылку', openLink: 'Открыть',
     videoNotSaved: 'Видео из прошлых чатов не сохраняются. Прикрепите видео снова, если нужно.',
     addVideo: 'Видео', addMusic: 'Музыка',
     placeholder: 'Спросите что угодно…',
@@ -34,14 +39,18 @@ const T = {
     musicMissing: 'Чтобы добавить музыку, прикрепите её кнопкой 🎵 Музыка.',
     big: 'Видео большое — монтаж в браузере может быть медленным.',
     busy: 'Подождите, я ещё работаю…',
-    chips: ['Придумай 5 идей для постов в Instagram', 'Напиши рекламный текст для кофейни', 'Объясни простыми словами, что такое воронка продаж', 'Как смонтировать видео для Reels?'],
+    chips: ['Сделай сайт для кофейни', 'Придумай 5 идей для постов в Instagram', 'Напиши рекламный текст для салона красоты', 'Объясни простыми словами, что такое воронка продаж'],
   },
   en: {
     newChat: 'New chat',
     privacy: 'Your video is not uploaded — editing happens right in your browser.',
     welcomeTitle: 'How can I help you today?',
-    welcomeSub: 'Ask me anything — or attach a video 📎 and I will edit it.',
+    welcomeSub: 'Ask me anything, ask for a website — or attach a video 📎 and I will edit it.',
     recent: 'Chats', copy: 'Copy', copied: 'Copied ✓', deleteChat: 'Delete chat',
+    siteOpen: 'Open', siteCode: 'Code', siteDownload: 'HTML', siteClose: 'Close', building: 'Building the website… this can take up to a minute',
+    signIn: 'Sign in with Google', signOut: 'Sign out', publish: 'Publish', republish: 'Update site', publishing: 'Publishing…',
+    published: 'Your website is live:', publishError: 'Publishing failed. Please try again.', publishRules: 'Publishing is not set up: check the Firestore rules.',
+    notSetup: 'Publishing is not set up yet (FIREBASE_CONFIG is needed on Render).', signInError: 'Sign-in failed. Allow pop-ups and try again.', needSignIn: 'To publish a website, sign in with Google.', copyLink: 'Copy link', openLink: 'Open',
     videoNotSaved: 'Videos from past chats are not saved. Attach the video again if you need it.',
     addVideo: 'Video', addMusic: 'Music',
     placeholder: 'Ask anything…',
@@ -62,7 +71,7 @@ const T = {
     musicMissing: 'To add music, attach it with the 🎵 Music button.',
     big: 'This video is large — editing in the browser may be slow.',
     busy: 'Please wait, I am still working…',
-    chips: ['Give me 5 Instagram post ideas', 'Write an ad for a coffee shop', 'Explain a sales funnel in simple words', 'How do I edit a video for Reels?'],
+    chips: ['Build a website for a coffee shop', 'Give me 5 Instagram post ideas', 'Write an ad for a beauty salon', 'Explain a sales funnel in simple words'],
   },
 };
 let lang = 'ru';
@@ -105,6 +114,7 @@ function applyLang() {
     chips.appendChild(b);
   }
   if (typeof renderChatList === 'function' && document.getElementById('chatList')) renderChatList();
+  if (typeof renderAccount === 'function' && cloudReady()) renderAccount(currentUser());
 }
 
 function toBottom() { requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight; }); }
@@ -276,16 +286,22 @@ function saveChats() {
   try { localStorage.setItem('mspb_chats', JSON.stringify(chats)); } catch { /* storage full or blocked */ }
   renderChatList();
 }
-function remember(role, content) {
+function remember(role, content, extra = {}) {
   if (!chat) {
     chat = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), title: '', messages: [], updated: Date.now(), hadVideo: false };
     chats.unshift(chat);
   }
   if (!chat.title && (role === 'user' || role === 'note')) chat.title = content.replace(/\s+/g, ' ').slice(0, 48);
-  chat.messages.push({ role, content: String(content).slice(0, 12000) });
+  const msg = { role, content: String(content).slice(0, 12000), ...extra };
+  chat.messages.push(msg);
   if (chat.messages.length > 80) chat.messages = chat.messages.slice(-80);
   chat.updated = Date.now();
   saveChats();
+  return msg;
+}
+function currentSite() {
+  const m = chat ? [...chat.messages].reverse().find((x) => x.site) : null;
+  return m ? m.site : '';
 }
 function aiHistory() {
   return (chat ? chat.messages : []).filter((m) => m.role === 'user' || m.role === 'assistant').slice(-12);
@@ -322,9 +338,12 @@ async function openChat(id) {
   chat = c;
   thread.innerHTML = '';
   document.body.classList.remove('empty', 'menu');
+  const c_msgs = c.messages;
   for (const m of c.messages) {
     if (m.role === 'user') userMsg(m.content);
-    else if (m.role === 'assistant') aiAnswer(m.content, { typing: false });
+    else if (m.role === 'assistant') {
+      aiAnswer(m.content, { typing: false }).then((c) => { if (m.site) c.insertBefore(siteCard(m.site, { showLink: m === [...c_msgs].reverse().find((x) => x.site) }), c.querySelector('.msg-actions')); });
+    }
     else if (m.role === 'note') { const n = document.createElement('div'); n.className = 'row note'; n.textContent = m.content; thread.appendChild(n); }
   }
   if (c.hadVideo) { const n = document.createElement('div'); n.className = 'row note'; n.textContent = t('videoNotSaved'); thread.appendChild(n); }
@@ -335,6 +354,118 @@ function deleteChat(id) {
   chats = chats.filter((x) => x.id !== id);
   if (chat && chat.id === id) newChat();
   saveChats();
+}
+
+// ---------- Google account ----------
+function renderAccount(u) {
+  const box = $('account');
+  if (!cloudReady()) { box.hidden = true; return; }
+  box.hidden = false; box.innerHTML = '';
+  if (!u) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'google-btn';
+    b.innerHTML = '<svg viewBox="0 0 48 48" width="18" height="18" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>';
+    const sp = document.createElement('span'); sp.textContent = t('signIn'); b.appendChild(sp);
+    b.onclick = async () => { try { await signIn(); } catch (e) { console.error(e); } };
+    box.appendChild(b);
+    return;
+  }
+  const row = document.createElement('div'); row.className = 'me';
+  if (u.photoURL) { const img = document.createElement('img'); img.src = u.photoURL; img.alt = ''; img.referrerPolicy = 'no-referrer'; row.appendChild(img); }
+  else { const av = document.createElement('span'); av.className = 'av'; av.textContent = (u.displayName || u.email || '?')[0].toUpperCase(); row.appendChild(av); }
+  const nm = document.createElement('div'); nm.className = 'nm';
+  const n1 = document.createElement('b'); n1.textContent = u.displayName || 'User';
+  const n2 = document.createElement('small'); n2.textContent = u.email || '';
+  nm.append(n1, n2);
+  const out = document.createElement('button'); out.type = 'button'; out.className = 'mini'; out.textContent = t('signOut');
+  out.onclick = () => signOut();
+  row.append(nm, out);
+  box.appendChild(row);
+}
+
+// ---------- website preview ----------
+function siteTitle(html) {
+  const m = html.match(/<title[^>]*>([^<]{1,80})<\/title>/i);
+  return m ? m[1].trim() : 'website';
+}
+function makeFrame(html) {
+  const f = document.createElement('iframe');
+  f.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-modals');
+  f.setAttribute('referrerpolicy', 'no-referrer');
+  f.srcdoc = html;
+  return f;
+}
+function openFullSite(html) {
+  const ov = document.createElement('div');
+  ov.className = 'site-overlay';
+  const bar = document.createElement('div');
+  bar.className = 'sbar';
+  const title = document.createElement('span');
+  title.className = 'stitle'; title.textContent = siteTitle(html);
+  const close = document.createElement('button');
+  close.type = 'button'; close.className = 'sbtn'; close.textContent = '✕ ' + t('siteClose');
+  close.onclick = () => ov.remove();
+  bar.append(title, close);
+  ov.append(bar, makeFrame(html));
+  document.body.appendChild(ov);
+  const onKey = (e) => { if (e.key === 'Escape') { ov.remove(); window.removeEventListener('keydown', onKey); } };
+  window.addEventListener('keydown', onKey);
+}
+function siteCard(html, opts = {}) {
+  const card = document.createElement('div');
+  card.className = 'scard';
+  const bar = document.createElement('div');
+  bar.className = 'sbar';
+  const dots = document.createElement('span'); dots.className = 'sdots'; dots.innerHTML = '<i></i><i></i><i></i>';
+  const title = document.createElement('span'); title.className = 'stitle'; title.textContent = siteTitle(html);
+  const btns = document.createElement('div'); btns.className = 'sbtns';
+  const wrap = document.createElement('div'); wrap.className = 'sframe';
+  wrap.appendChild(makeFrame(html));
+  const mk = (label, fn, cls = 'sbtn') => { const b = document.createElement('button'); b.type = 'button'; b.className = cls; b.textContent = label; b.onclick = fn; return b; };
+  const desk = mk('🖥', () => { wrap.classList.remove('mobile'); desk.classList.add('on'); phone.classList.remove('on'); }, 'sbtn on');
+  const phone = mk('📱', () => { wrap.classList.add('mobile'); phone.classList.add('on'); desk.classList.remove('on'); });
+  const full = mk('⛶ ' + t('siteOpen'), () => openFullSite(html));
+  const code = mk('⧉ ' + t('siteCode'), () => copyText(html, code, '⧉ ' + t('siteCode')));
+  const dl = document.createElement('a');
+  dl.className = 'sbtn'; dl.textContent = '⬇ ' + t('siteDownload');
+  dl.href = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+  dl.download = (siteTitle(html).replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '').toLowerCase() || 'website') + '.html';
+  const info = document.createElement('div');
+  info.className = 'spub'; info.hidden = true;
+  const showLink = (id) => {
+    const link = location.origin + '/s/' + id;
+    info.hidden = false; info.innerHTML = '';
+    const lab = document.createElement('span'); lab.textContent = '🌐 ' + t('published') + ' ';
+    const a = document.createElement('a'); a.href = link; a.target = '_blank'; a.rel = 'noopener'; a.textContent = link.replace(/^https?:\/\//, '');
+    const cp = mk('⧉ ' + t('copyLink'), () => copyText(link, cp, '⧉ ' + t('copyLink')));
+    info.append(lab, a, cp);
+  };
+  const say = (msg, bad = true) => { info.hidden = false; info.innerHTML = ''; const sp = document.createElement('span'); sp.textContent = msg; if (bad) sp.className = 'bad'; info.appendChild(sp); };
+  const pub = mk('🚀 ' + (chat && chat.siteId ? t('republish') : t('publish')), async () => {
+    if (!cloudReady()) { say(t('notSetup')); return; }
+    if (!currentUser()) {
+      say(t('needSignIn'), false);
+      try { await signIn(); } catch (e) { console.error(e); say(t('signInError')); return; }
+      if (!currentUser()) return;
+    }
+    const ownerChat = chat;
+    pub.disabled = true; pub.textContent = '⏳ ' + t('publishing');
+    try {
+      const id = await publishSite(html, siteTitle(html), ownerChat && ownerChat.siteId);
+      if (ownerChat) { ownerChat.siteId = id; saveChats(); }
+      showLink(id);
+      pub.textContent = '🚀 ' + t('republish');
+    } catch (e) {
+      console.error(e);
+      say(e && e.code === 'permission-denied' ? t('publishRules') : t('publishError'));
+      pub.textContent = '🚀 ' + (ownerChat && ownerChat.siteId ? t('republish') : t('publish'));
+    } finally { pub.disabled = false; }
+  }, 'sbtn pub');
+  btns.append(pub, desk, phone, full, code, dl);
+  bar.append(dots, title, btns);
+  card.append(bar, info, wrap);
+  if (chat && chat.siteId && opts.showLink) showLink(chat.siteId);
+  return card;
 }
 
 function videoCard(version) {
@@ -530,18 +661,26 @@ async function send() {
   remember('user', message);
   const cur = versions.at(-1);
   setWorking(true);
-  const st = status(t('thinking'));
+  const wantsSite = /сайт|лендинг|страниц|website|landing|web ?page|html/i.test(message) || !!currentSite();
+  const st = status(wantsSite ? t('building') : t('thinking'));
   try {
     const r = await fetch('/api/plan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message, history, video: cur ? cur.info : null, hasMusic: !!musicName }),
+      body: JSON.stringify({ message, history, video: cur ? cur.info : null, hasMusic: !!musicName, site: currentSite() }),
     });
     if (r.status === 429) { st.done(); aiMsg(t('limit'), 'error'); return; }
     if (!r.ok) { st.done(); aiMsg(t('aiError'), 'error'); return; }
-    const { reply, operations } = await r.json();
-    remember('assistant', reply || '…');
+    const { reply, operations, website } = await r.json();
+    remember('assistant', reply || (website ? '✔' : '…'), website ? { site: website } : {});
 
+    if (website) {
+      st.done();
+      const c = await aiAnswer(reply || '✔');
+      c.insertBefore(siteCard(website), c.querySelector('.msg-actions'));
+      toBottom();
+      return;
+    }
     if (!operations.length) { st.done(); await aiAnswer(reply || '…'); return; }
     if (!cur) { st.done(); aiMsg(t('noVideo')); return; }
 
@@ -611,4 +750,5 @@ document.querySelectorAll('.lang button').forEach((b) => b.addEventListener('cli
 
 applyLang();
 renderChatList();
+initCloud().then((ok) => { if (ok) onUser(renderAccount); }).catch((e) => console.error('Firebase:', e));
 loadEngine().catch(() => {}); // start downloading the editor in the background

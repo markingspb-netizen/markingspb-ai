@@ -1,0 +1,22 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /sites/{siteId} {
+      // Anyone can open a published website by its link
+      allow get: if true;
+      // People can list only their own websites
+      allow list: if request.auth != null && resource.data.owner == request.auth.uid;
+      // Only a signed-in person can publish, as themselves, up to ~900 KB
+      allow create: if request.auth != null
+        && request.resource.data.owner == request.auth.uid
+        && request.resource.data.html is string
+        && request.resource.data.html.size() < 900000;
+      // Only the owner can update or delete their website
+      allow update: if request.auth != null
+        && resource.data.owner == request.auth.uid
+        && request.resource.data.owner == request.auth.uid
+        && request.resource.data.html.size() < 900000;
+      allow delete: if request.auth != null && resource.data.owner == request.auth.uid;
+    }
+  }
+}

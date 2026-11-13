@@ -30,7 +30,7 @@ const STATIC = [
   ['/', __dirname],
 ];
 // Only these files from the main folder are shown to visitors.
-const PUBLIC_FILES = new Set(['index.html', 'app.js', 'pipeline.js', 'style.css', 'logo.svg', 'DejaVuSans-Bold.ttf']);
+const PUBLIC_FILES = new Set(['index.html', 'app.js', 'pipeline.js', 'cloud.js', 'style.css', 'logo.svg', 'DejaVuSans-Bold.ttf']);
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.wasm': 'application/wasm', '.ttf': 'font/ttf', '.svg': 'image/svg+xml',
@@ -58,6 +58,54 @@ async function serveStatic(req, res, urlPath) {
   }
   res.writeHead(404, { 'Content-Type': 'text/plain' });
   res.end('Not found');
+}
+
+// ---------- Firebase settings ----------
+// FIREBASE_CONFIG on Render: paste the whole "const firebaseConfig = { ... }" block from Firebase.
+function readFirebaseConfig() {
+  const raw = process.env.FIREBASE_CONFIG || '';
+  const cfg = {};
+  for (const m of raw.matchAll(/["']?(\w+)["']?\s*:\s*["']([^"']+)["']/g)) cfg[m[1]] = m[2];
+  return cfg.apiKey && cfg.projectId ? cfg : null;
+}
+const FIREBASE = readFirebaseConfig();
+if (FIREBASE) console.log('Firebase is on for project', FIREBASE.projectId); else console.log('Firebase is off (no FIREBASE_CONFIG)');
+
+// ---------- published websites: /s/<id> ----------
+const siteCache = new Map();
+const BADGE = '<a href="/" target="_blank" rel="noopener" style="position:fixed;right:12px;bottom:12px;z-index:2147483647;font:600 12px system-ui,sans-serif;background:#111;color:#fff;padding:7px 12px;border-radius:999px;text-decoration:none;opacity:.85;box-shadow:0 4px 14px rgba(0,0,0,.25)">Made with Markingspb AI</a>';
+
+async function serveSite(res, id) {
+  const page = (code, html) => {
+    res.writeHead(code, {
+      'Content-Type': 'text/html; charset=utf-8',
+      // The page runs in its own sandbox, so it can never touch Markingspb AI accounts or chats.
+      'Content-Security-Policy': 'sandbox allow-scripts allow-forms allow-popups allow-modals allow-popups-to-escape-sandbox',
+      'Cache-Control': 'public, max-age=60',
+      'X-Robots-Tag': 'index, follow',
+    });
+    res.end(html);
+  };
+  if (!FIREBASE) return page(404, '<h1>Publishing is not set up</h1>');
+  if (!/^[A-Za-z0-9_-]{6,40}$/.test(id)) return page(404, '<h1>Not found</h1>');
+  const hit = siteCache.get(id);
+  if (hit && Date.now() - hit.t < 60_000) return page(200, hit.html);
+  try {
+    const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(FIREBASE.projectId)}/databases/(default)/documents/sites/${id}?key=${encodeURIComponent(FIREBASE.apiKey)}`;
+    const r = await fetch(url);
+    if (r.status === 404) return page(404, '<h1>This website does not exist</h1>');
+    if (!r.ok) throw new Error('firestore ' + r.status);
+    const doc = await r.json();
+    let html = doc.fields?.html?.stringValue || '';
+    if (!html) return page(404, '<h1>This website is empty</h1>');
+    html = /<\/body>/i.test(html) ? html.replace(/<\/body>(?![\s\S]*<\/body>)/i, BADGE + '</body>') : html + BADGE;
+    siteCache.set(id, { html, t: Date.now() });
+    if (siteCache.size > 300) siteCache.delete(siteCache.keys().next().value);
+    page(200, html);
+  } catch (e) {
+    console.error('Site error:', e.message);
+    page(502, '<h1>Could not load this website. Please try again later.</h1>');
+  }
 }
 
 // ---------- helpers ----------
@@ -91,6 +139,21 @@ function allowed(req, kind) {
   list.push(now);
   hits.set(key, list);
   return true;
+}
+
+// Take the website (```html ... ```) out of the answer, before reading the JSON.
+function splitWebsite(text) {
+  let raw = String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, '');
+  let website = null;
+  const fence = raw.match(/```html\s*\n?([\s\S]*?)(?:```|$)/i);
+  if (fence && /<html|<!doctype|<body/i.test(fence[1])) {
+    website = fence[1].trim();
+    raw = raw.replace(fence[0], '');
+  } else {
+    const bare = raw.match(/<!DOCTYPE html[\s\S]*?(?:<\/html>|$)/i);
+    if (bare) { website = bare[0].trim(); raw = raw.replace(bare[0], ''); }
+  }
+  return { rest: raw.trim(), website };
 }
 
 // Models sometimes put real line breaks inside JSON strings. Fix that.
@@ -134,7 +197,7 @@ function extractJSON(text) {
 }
 
 async function chat(url, key, model, messages, jsonMode) {
-  const body = { messages, temperature: 0.4, max_tokens: 4000 };
+  const body = { messages, temperature: 0.4, max_tokens: 12000 };
   if (Array.isArray(model)) body.models = model.slice(0, 3); else body.model = model;
   if (jsonMode) body.response_format = { type: 'json_object' };
   const r = await fetch(url, {
@@ -147,24 +210,32 @@ async function chat(url, key, model, messages, jsonMode) {
   return data.choices?.[0]?.message?.content || '';
 }
 
+function parseAnswer(text) {
+  const { rest, website } = splitWebsite(text);
+  let out = rest ? extractJSON(rest) : null;
+  if (!out && website) out = { reply: '', operations: [] };
+  if (out) out.website = website;
+  return out;
+}
+
 async function askAI(messages) {
   const errors = [];
   if (GROQ_API_KEY) {
     try {
-      const out = extractJSON(await chat('https://api.groq.com/openai/v1/chat/completions', GROQ_API_KEY, GROQ_MODEL, messages, true));
+      const out = parseAnswer(await chat('https://api.groq.com/openai/v1/chat/completions', GROQ_API_KEY, GROQ_MODEL, messages, true));
       if (out) return out;
       errors.push('groq: bad json');
     } catch (e) { errors.push(e.message); }
   }
   if (OPENROUTER_API_KEY) {
     try {
-      const out = extractJSON(await chat('https://openrouter.ai/api/v1/chat/completions', OPENROUTER_API_KEY, OPENROUTER_MODELS, messages, false));
+      const out = parseAnswer(await chat('https://openrouter.ai/api/v1/chat/completions', OPENROUTER_API_KEY, OPENROUTER_MODELS, messages, false));
       if (out) return out;
       errors.push('openrouter: bad json');
     } catch (e) { errors.push(e.message); }
     // Last resort: any free model.
     try {
-      const out = extractJSON(await chat('https://openrouter.ai/api/v1/chat/completions', OPENROUTER_API_KEY, 'openrouter/free', messages, false));
+      const out = parseAnswer(await chat('https://openrouter.ai/api/v1/chat/completions', OPENROUTER_API_KEY, 'openrouter/free', messages, false));
       if (out) return out;
     } catch (e) { errors.push(e.message); }
   }
@@ -182,9 +253,10 @@ async function handlePlan(req, res) {
   const message = String(input.message || '').slice(0, 8000);
   const v = input.video || null;
   const history = Array.isArray(input.history) ? input.history.slice(-12) : [];
-  const context = v
+  const site = typeof input.site === 'string' && input.site.trim() ? input.site.slice(0, 60000) : '';
+  const context = (v
     ? `Current video: duration ${Number(v.duration).toFixed(2)} s, size ${v.width}x${v.height}, has sound: ${v.hasAudio ? 'yes' : 'no'}. Music file attached: ${input.hasMusic ? 'yes' : 'no'}.`
-    : 'No video is loaded yet.';
+    : 'No video is loaded yet.') + (site ? `\nCurrent website (change THIS one if the user asks to edit the website):\n\`\`\`html\n${site}\n\`\`\`` : '');
 
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
@@ -197,7 +269,7 @@ async function handlePlan(req, res) {
   try {
     const out = await askAI(messages);
     const operations = Array.isArray(out.operations) ? out.operations.filter((o) => o && typeof o.op === 'string').slice(0, 30) : [];
-    sendJSON(res, 200, { reply: String(out.reply || ''), operations });
+    sendJSON(res, 200, { reply: String(out.reply || ''), operations, website: out.website || null });
   } catch (e) {
     console.error('AI error:', e.message);
     sendJSON(res, 502, { error: 'ai_unavailable' });
@@ -237,7 +309,10 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === 'POST' && url.pathname === '/api/plan') return await handlePlan(req, res);
     if (req.method === 'POST' && url.pathname === '/api/transcribe') return await handleTranscribe(req, res, url);
-    if (url.pathname === '/api/health') return sendJSON(res, 200, { ok: true, groq: !!GROQ_API_KEY, openrouter: !!OPENROUTER_API_KEY });
+    if (url.pathname === '/api/health') return sendJSON(res, 200, { ok: true, groq: !!GROQ_API_KEY, openrouter: !!OPENROUTER_API_KEY, firebase: !!FIREBASE });
+    if (url.pathname === '/api/config') return sendJSON(res, 200, { firebase: FIREBASE });
+    const siteMatch = url.pathname.match(/^\/s\/([^/]+)\/?$/);
+    if (siteMatch && (req.method === 'GET' || req.method === 'HEAD')) return await serveSite(res, siteMatch[1]);
     if (req.method === 'GET' || req.method === 'HEAD') return await serveStatic(req, res, url.pathname);
     sendJSON(res, 405, { error: 'method' });
   } catch (e) {
