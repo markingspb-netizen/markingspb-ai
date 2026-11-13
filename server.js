@@ -21,6 +21,7 @@ const OPENROUTER_MODELS = (process.env.OPENROUTER_MODELS ||
   .split(',').map((m) => m.trim()).filter(Boolean);
 const WHISPER_MODEL = process.env.WHISPER_MODEL || 'whisper-large-v3-turbo';
 const LIMIT_PER_HOUR = Number(process.env.LIMIT_PER_HOUR || 60);
+const PEXELS_API_KEY = process.env.PEXELS_API_KEY || '';
 
 // ---------- static files ----------
 const STATIC = [
@@ -151,6 +152,55 @@ function fixHtml(h) {
       .replace(/\\"/g, '"').replace(/\\'/g, "'").replace(/\\\//g, '/').replace(/\\\\/g, '\\');
   }
   return h.trim();
+}
+
+// ---------- real photos for websites ----------
+// The AI writes photo:search words. We replace them with real photos from Pexels (free key),
+// or, without a key, with random real photos from picsum.photos.
+const photoCache = new Map();
+async function findPhotos(query) {
+  const key = query.toLowerCase();
+  const hit = photoCache.get(key);
+  if (hit && Date.now() - hit.t < 86400_000) return hit.list;
+  let list = [];
+  if (PEXELS_API_KEY) {
+    try {
+      const r = await fetch(`https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=6&orientation=landscape`, {
+        headers: { Authorization: PEXELS_API_KEY },
+      });
+      if (r.ok) list = ((await r.json()).photos || []).map((p) => p.src && (p.src.large2x || p.src.large)).filter(Boolean);
+      else console.error('Pexels', r.status);
+    } catch (e) { console.error('Pexels error:', e.message); }
+  }
+  photoCache.set(key, { list, t: Date.now() });
+  if (photoCache.size > 500) photoCache.delete(photoCache.keys().next().value);
+  return list;
+}
+async function addPhotos(html) {
+  if (!html || !/photo:/i.test(html)) return html;
+  const re = /photo:([^"')<>\n]{2,80})/gi;
+  const queries = [...new Set([...html.matchAll(re)].map((m) => m[1].trim()))].slice(0, 12);
+  const used = new Map();
+  let fromPexels = false;
+  const urls = new Map();
+  await Promise.all(queries.map(async (q) => {
+    const list = await findPhotos(q);
+    urls.set(q, list);
+  }));
+  html = html.replace(re, (all, q) => {
+    q = q.trim();
+    const list = urls.get(q) || [];
+    const n = used.get(q) || 0;
+    used.set(q, n + 1);
+    if (list.length) { fromPexels = true; return list[n % list.length]; }
+    const seed = encodeURIComponent(q.replace(/\s+/g, '-').toLowerCase() + (n ? '-' + n : ''));
+    return `https://picsum.photos/seed/${seed}/1600/1000`;
+  });
+  if (fromPexels && !/pexels\.com"[^>]*>Pexels/i.test(html)) {
+    const credit = '<p style="text-align:center;font:12px/1.4 system-ui,sans-serif;opacity:.6;margin:18px 0">Photos: <a href="https://www.pexels.com" target="_blank" rel="noopener" style="color:inherit">Pexels</a></p>';
+    html = /<\/body>/i.test(html) ? html.replace(/<\/body>(?![\s\S]*<\/body>)/i, credit + '</body>') : html + credit;
+  }
+  return html;
 }
 
 // Take the website (```html ... ```) out of the answer, before reading the JSON.
@@ -288,6 +338,7 @@ async function handlePlan(req, res) {
 
   try {
     const out = await askAI(messages);
+    if (out.website) out.website = await addPhotos(out.website);
     const operations = Array.isArray(out.operations) ? out.operations.filter((o) => o && typeof o.op === 'string').slice(0, 30) : [];
     sendJSON(res, 200, { reply: String(out.reply || ''), operations, website: out.website || null });
   } catch (e) {
@@ -329,7 +380,7 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === 'POST' && url.pathname === '/api/plan') return await handlePlan(req, res);
     if (req.method === 'POST' && url.pathname === '/api/transcribe') return await handleTranscribe(req, res, url);
-    if (url.pathname === '/api/health') return sendJSON(res, 200, { ok: true, groq: !!GROQ_API_KEY, openrouter: !!OPENROUTER_API_KEY, firebase: !!FIREBASE });
+    if (url.pathname === '/api/health') return sendJSON(res, 200, { ok: true, groq: !!GROQ_API_KEY, openrouter: !!OPENROUTER_API_KEY, firebase: !!FIREBASE, photos: PEXELS_API_KEY ? 'pexels' : 'picsum' });
     if (url.pathname === '/api/config') return sendJSON(res, 200, { firebase: FIREBASE });
     const siteMatch = url.pathname.match(/^\/s\/([^/]+)\/?$/);
     if (siteMatch && (req.method === 'GET' || req.method === 'HEAD')) return await serveSite(res, siteMatch[1]);

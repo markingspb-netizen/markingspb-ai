@@ -5,7 +5,7 @@
 import { FFmpeg } from '/vendor/ffmpeg/index.js';
 import { fetchFile } from '/vendor/util/index.js';
 import { buildEdit, splitAtSubtitles, subtitleOps } from '/pipeline.js';
-import { initCloud, cloudReady, currentUser, onUser, signIn, signOut, publishSite } from '/cloud.js';
+import { initCloud, cloudReady, currentUser, onUser, signIn, signOut, publishSite, signUpEmail, signInEmail, resetPassword, saveChatCloud, deleteChatCloud, loadChatsCloud } from '/cloud.js';
 
 // ---------- texts (RU / EN) ----------
 const T = {
@@ -18,7 +18,13 @@ const T = {
     siteOpen: 'Открыть', siteCode: 'Код', siteDownload: 'HTML', siteClose: 'Закрыть', building: 'Создаю сайт… это может занять до минуты',
     signIn: 'Войти через Google', signOut: 'Выйти', publish: 'Опубликовать', republish: 'Обновить сайт', publishing: 'Публикую…',
     published: 'Сайт опубликован:', publishError: 'Не получилось опубликовать. Попробуйте ещё раз.', publishRules: 'Публикация не настроена: проверьте правила Firestore.',
-    notSetup: 'Публикация ещё не настроена (нужен FIREBASE_CONFIG на Render).', signInError: 'Не получилось войти. Разрешите всплывающие окна и попробуйте снова.', needSignIn: 'Чтобы опубликовать сайт, войдите через Google.', copyLink: 'Копировать ссылку', openLink: 'Открыть',
+    notSetup: 'Публикация ещё не настроена (нужен FIREBASE_CONFIG на Render).',
+    login: 'Войти / Регистрация', tabIn: 'Вход', tabUp: 'Регистрация', fName: 'Имя', fEmail: 'Email', fPass: 'Пароль (минимум 6 символов)',
+    doIn: 'Войти', doUp: 'Создать аккаунт', forgot: 'Забыли пароль?', resetSent: 'Мы отправили письмо для сброса пароля. Проверьте почту (и папку «Спам»).',
+    orGoogle: 'или', loginNote: 'Чаты сохранятся в вашем аккаунте и будут доступны на любом устройстве.',
+    eWrong: 'Неверный email или пароль.', eUsed: 'Этот email уже зарегистрирован. Нажмите «Вход».', eWeak: 'Пароль слишком короткий (минимум 6 символов).',
+    eEmail: 'Проверьте email — похоже, в нём ошибка.', eMany: 'Слишком много попыток. Подождите несколько минут.', eOff: 'Вход по email ещё не включён в Firebase.',
+    eNet: 'Нет связи. Проверьте интернет.', eOther: 'Не получилось. Попробуйте ещё раз.', eFill: 'Заполните email и пароль.', loginFirst: 'Сначала войдите в аккаунт.', signInError: 'Не получилось войти. Разрешите всплывающие окна и попробуйте снова.', needSignIn: 'Чтобы опубликовать сайт, войдите в аккаунт.', copyLink: 'Копировать ссылку', openLink: 'Открыть',
     videoNotSaved: 'Видео из прошлых чатов не сохраняются. Прикрепите видео снова, если нужно.',
     addVideo: 'Видео', addMusic: 'Музыка',
     placeholder: 'Спросите что угодно…',
@@ -50,7 +56,13 @@ const T = {
     siteOpen: 'Open', siteCode: 'Code', siteDownload: 'HTML', siteClose: 'Close', building: 'Building the website… this can take up to a minute',
     signIn: 'Sign in with Google', signOut: 'Sign out', publish: 'Publish', republish: 'Update site', publishing: 'Publishing…',
     published: 'Your website is live:', publishError: 'Publishing failed. Please try again.', publishRules: 'Publishing is not set up: check the Firestore rules.',
-    notSetup: 'Publishing is not set up yet (FIREBASE_CONFIG is needed on Render).', signInError: 'Sign-in failed. Allow pop-ups and try again.', needSignIn: 'To publish a website, sign in with Google.', copyLink: 'Copy link', openLink: 'Open',
+    notSetup: 'Publishing is not set up yet (FIREBASE_CONFIG is needed on Render).',
+    login: 'Log in / Sign up', tabIn: 'Log in', tabUp: 'Sign up', fName: 'Name', fEmail: 'Email', fPass: 'Password (at least 6 characters)',
+    doIn: 'Log in', doUp: 'Create account', forgot: 'Forgot password?', resetSent: 'We sent a password reset email. Check your inbox (and spam folder).',
+    orGoogle: 'or', loginNote: 'Your chats are saved in your account and available on any device.',
+    eWrong: 'Wrong email or password.', eUsed: 'This email is already registered. Tap "Log in".', eWeak: 'The password is too short (at least 6 characters).',
+    eEmail: 'Please check the email address.', eMany: 'Too many attempts. Please wait a few minutes.', eOff: 'Email login is not turned on in Firebase yet.',
+    eNet: 'No connection. Check your internet.', eOther: 'Something went wrong. Please try again.', eFill: 'Please enter your email and password.', loginFirst: 'Please log in first.', signInError: 'Sign-in failed. Allow pop-ups and try again.', needSignIn: 'To publish a website, please log in.', copyLink: 'Copy link', openLink: 'Open',
     videoNotSaved: 'Videos from past chats are not saved. Attach the video again if you need it.',
     addVideo: 'Video', addMusic: 'Music',
     placeholder: 'Ask anything…',
@@ -89,6 +101,9 @@ let engineReady = null;
 let logLines = [];
 let versions = [];          // [{ blob, info, card }]
 let musicName = null;
+let chatsKey = 'mspb_chats';  // guests: this browser; logged in: per account
+let signedUid = null;
+let cloudTimer = null;
 let chats = loadChats();     // saved chats (text only)
 let chat = null;             // the open chat: { id, title, messages: [{ role, content }], updated, hadVideo }
 let working = false;
@@ -114,7 +129,7 @@ function applyLang() {
     chips.appendChild(b);
   }
   if (typeof renderChatList === 'function' && document.getElementById('chatList')) renderChatList();
-  if (typeof renderAccount === 'function' && cloudReady()) renderAccount(currentUser());
+  if (typeof renderAccount === 'function' && typeof cloudReady === 'function' && cloudReady()) renderAccount(currentUser());
 }
 
 function toBottom() { requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight; }); }
@@ -277,14 +292,48 @@ async function copyText(str, btn, label) {
 }
 
 // ---------- saved chats (only text is saved, in this browser) ----------
-function loadChats() {
-  try { const a = JSON.parse(localStorage.getItem('mspb_chats') || '[]'); return Array.isArray(a) ? a : []; } catch { return []; }
+// Guests keep chats in this browser. Logged-in users keep them in their account (and a copy here).
+function loadChats(key = chatsKey) {
+  try { const a = JSON.parse(localStorage.getItem(key) || '[]'); return Array.isArray(a) ? a : []; } catch { return []; }
 }
-function saveChats() {
-  chats.sort((a, b) => b.updated - a.updated);
-  chats = chats.slice(0, 40);
-  try { localStorage.setItem('mspb_chats', JSON.stringify(chats)); } catch { /* storage full or blocked */ }
+function saveChats(sync = true) {
+  chats.sort((a, b) => (b.updated || 0) - (a.updated || 0));
+  chats = chats.slice(0, 60);
+  try { localStorage.setItem(chatsKey, JSON.stringify(chats)); } catch { /* storage full or blocked */ }
   renderChatList();
+  if (sync && signedUid && chat) {
+    const c = chat;
+    clearTimeout(cloudTimer);
+    cloudTimer = setTimeout(() => saveChatCloud(c).catch((e) => console.error('Cloud save:', e)), 700);
+  }
+}
+async function onUserChanged(u) {
+  renderAccount(u);
+  if (u && u.uid !== signedUid) {
+    signedUid = u.uid;
+    chatsKey = 'mspb_chats_' + u.uid;
+    const guest = loadChats('mspb_chats');
+    const local = loadChats(chatsKey);
+    let cloud = [];
+    try { cloud = await loadChatsCloud(); } catch (e) { console.error('Cloud load:', e); }
+    const all = new Map();
+    for (const c of [...cloud, ...local, ...guest]) {
+      const old = all.get(c.id);
+      if (!old || (c.updated || 0) > (old.updated || 0)) all.set(c.id, c);
+    }
+    chats = [...all.values()];
+    const inCloud = new Map(cloud.map((c) => [c.id, c.updated || 0]));
+    for (const c of chats) if (!inCloud.has(c.id) || (c.updated || 0) > inCloud.get(c.id)) saveChatCloud(c).catch((e) => console.error(e));
+    if (guest.length) { try { localStorage.removeItem('mspb_chats'); } catch { /* ignore */ } }
+    if (chat) chat = chats.find((c) => c.id === chat.id) || chat;
+    saveChats(false);
+  } else if (!u && signedUid) {
+    signedUid = null;
+    chatsKey = 'mspb_chats';
+    chats = loadChats();
+    await newChat();
+    saveChats(false);
+  }
 }
 function remember(role, content, extra = {}) {
   if (!chat) {
@@ -352,6 +401,7 @@ async function openChat(id) {
 }
 function deleteChat(id) {
   chats = chats.filter((x) => x.id !== id);
+  if (signedUid) deleteChatCloud(id).catch((e) => console.error(e));
   if (chat && chat.id === id) newChat();
   saveChats();
 }
@@ -362,14 +412,106 @@ function renderAccount(u) {
   if (!cloudReady()) { box.hidden = true; return; }
   box.hidden = false; box.innerHTML = '';
   if (!u) {
-    const b = document.createElement('button');
-    b.type = 'button'; b.className = 'google-btn';
-    b.innerHTML = '<svg viewBox="0 0 48 48" width="18" height="18" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>';
-    const sp = document.createElement('span'); sp.textContent = t('signIn'); b.appendChild(sp);
-    b.onclick = async () => { try { await signIn(); } catch (e) { console.error(e); } };
-    box.appendChild(b);
+    const lb = document.createElement('button');
+    lb.type = 'button'; lb.className = 'login-btn'; lb.textContent = '👤 ' + t('login');
+    lb.onclick = () => openLogin();
+    box.appendChild(lb);
     return;
   }
+  renderMe(box, u);
+}
+
+const GOOGLE_SVG = '<svg viewBox="0 0 48 48" width="18" height="18" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>';
+
+function authError(e) {
+  const c = (e && e.code) || '';
+  if (/invalid-credential|wrong-password|user-not-found|invalid-login/.test(c)) return t('eWrong');
+  if (/email-already-in-use/.test(c)) return t('eUsed');
+  if (/weak-password/.test(c)) return t('eWeak');
+  if (/invalid-email|missing-email/.test(c)) return t('eEmail');
+  if (/too-many-requests/.test(c)) return t('eMany');
+  if (/operation-not-allowed|admin-restricted/.test(c)) return t('eOff');
+  if (/network-request-failed/.test(c)) return t('eNet');
+  if (/popup-closed|cancelled-popup/.test(c)) return '';
+  return t('eOther');
+}
+
+// The login / sign-up window. Resolves with the user, or null if closed.
+function openLogin() {
+  if (!cloudReady()) { aiMsg(t('notSetup'), 'error'); return Promise.resolve(null); }
+  if (currentUser()) return Promise.resolve(currentUser());
+  return new Promise((resolve) => {
+    let mode = 'in';
+    const ov = document.createElement('div'); ov.className = 'modal-bg';
+    const box = document.createElement('form'); box.className = 'modal'; box.noValidate = true;
+    const close = (u) => { ov.remove(); resolve(u || null); };
+    ov.onclick = (e) => { if (e.target === ov) close(null); };
+    box.innerHTML = `
+      <button type="button" class="modal-x" aria-label="Close">×</button>
+      <img src="/logo.svg" alt="" width="44" height="44" class="modal-logo">
+      <div class="tabs"><button type="button" data-m="in"></button><button type="button" data-m="up"></button></div>
+      <label class="fld name-fld"><span></span><input name="name" autocomplete="name"></label>
+      <label class="fld"><span></span><input name="email" type="email" autocomplete="email" inputmode="email"></label>
+      <label class="fld"><span></span><input name="pass" type="password" autocomplete="current-password"></label>
+      <div class="m-msg" hidden></div>
+      <button type="submit" class="m-main"></button>
+      <button type="button" class="m-link forgot"></button>
+      <div class="m-or"><span></span></div>
+      <button type="button" class="google-btn">${GOOGLE_SVG}<span>${t('signIn')}</span></button>
+      <p class="m-note"></p>`;
+    const $$ = (q) => box.querySelector(q);
+    const [nameL, emailL, passL] = box.querySelectorAll('.fld span');
+    nameL.textContent = t('fName'); emailL.textContent = t('fEmail'); passL.textContent = t('fPass');
+    $$('.tabs [data-m=in]').textContent = t('tabIn'); $$('.tabs [data-m=up]').textContent = t('tabUp');
+    $$('.forgot').textContent = t('forgot'); $$('.m-or span').textContent = t('orGoogle'); $$('.m-note').textContent = t('loginNote');
+    const msg = (text, good = false) => { const m = $$('.m-msg'); m.hidden = !text; m.textContent = text; m.className = 'm-msg' + (good ? ' good' : ''); };
+    const setMode = (m) => {
+      mode = m;
+      box.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.m === m));
+      $$('.name-fld').hidden = m !== 'up';
+      $$('.forgot').hidden = m !== 'in';
+      $$('.m-main').textContent = m === 'up' ? t('doUp') : t('doIn');
+      $$('input[name=pass]').autocomplete = m === 'up' ? 'new-password' : 'current-password';
+      msg('');
+    };
+    box.querySelectorAll('.tabs button').forEach((b) => { b.onclick = () => setMode(b.dataset.m); });
+    $$('.modal-x').onclick = () => close(null);
+    const busy = (on) => { box.querySelectorAll('button, input').forEach((el) => { el.disabled = on; }); };
+    box.onsubmit = async (e) => {
+      e.preventDefault();
+      const name = $$('input[name=name]').value.trim();
+      const email = $$('input[name=email]').value.trim();
+      const pass = $$('input[name=pass]').value;
+      if (!email || !pass) { msg(t('eFill')); return; }
+      busy(true); msg('');
+      try {
+        const u = mode === 'up' ? await signUpEmail(name, email, pass) : await signInEmail(email, pass);
+        close(u);
+      } catch (err) { console.error(err); msg(authError(err)); busy(false); }
+    };
+    $$('.forgot').onclick = async () => {
+      const email = $$('input[name=email]').value.trim();
+      if (!email) { msg(t('eEmail')); return; }
+      busy(true);
+      try { await resetPassword(email); msg(t('resetSent'), true); }
+      catch (err) { console.error(err); msg(authError(err)); }
+      busy(false);
+    };
+    $$('.google-btn').onclick = async () => {
+      busy(true);
+      try { close(await signIn()); }
+      catch (err) { console.error(err); const m = authError(err); if (m) msg(m); busy(false); }
+    };
+    setMode('in');
+    ov.appendChild(box);
+    document.body.appendChild(ov);
+    setTimeout(() => $$('input[name=email]').focus(), 50);
+    const onKey = (e) => { if (e.key === 'Escape') { window.removeEventListener('keydown', onKey); close(null); } };
+    window.addEventListener('keydown', onKey);
+  });
+}
+
+function renderMe(box, u) {
   const row = document.createElement('div'); row.className = 'me';
   if (u.photoURL) { const img = document.createElement('img'); img.src = u.photoURL; img.alt = ''; img.referrerPolicy = 'no-referrer'; row.appendChild(img); }
   else { const av = document.createElement('span'); av.className = 'av'; av.textContent = (u.displayName || u.email || '?')[0].toUpperCase(); row.appendChild(av); }
@@ -445,8 +587,9 @@ function siteCard(html, opts = {}) {
     if (!cloudReady()) { say(t('notSetup')); return; }
     if (!currentUser()) {
       say(t('needSignIn'), false);
-      try { await signIn(); } catch (e) { console.error(e); say(t('signInError')); return; }
-      if (!currentUser()) return;
+      const u = await openLogin();
+      if (!u) return;
+      info.hidden = true;
     }
     const ownerChat = chat;
     pub.disabled = true; pub.textContent = '⏳ ' + t('publishing');
@@ -750,5 +893,5 @@ document.querySelectorAll('.lang button').forEach((b) => b.addEventListener('cli
 
 applyLang();
 renderChatList();
-initCloud().then((ok) => { if (ok) onUser(renderAccount); }).catch((e) => console.error('Firebase:', e));
+initCloud().then((ok) => { if (ok) onUser((u) => { onUserChanged(u).catch((e) => console.error(e)); }); }).catch((e) => console.error('Firebase:', e));
 loadEngine().catch(() => {}); // start downloading the editor in the background

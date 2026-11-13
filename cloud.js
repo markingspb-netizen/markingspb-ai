@@ -45,6 +45,56 @@ export async function signIn() {
 
 export const signOut = () => fb.A.signOut(fb.auth);
 
+// ---------- email + password ----------
+export async function signUpEmail(name, email, password) {
+  const cred = await fb.A.createUserWithEmailAndPassword(fb.auth, email, password);
+  if (name) {
+    await fb.A.updateProfile(cred.user, { displayName: name });
+    user = fb.auth.currentUser;
+    listeners.forEach((f) => f(user));
+  }
+  return cred.user;
+}
+export async function signInEmail(email, password) {
+  return (await fb.A.signInWithEmailAndPassword(fb.auth, email, password)).user;
+}
+export async function resetPassword(email) {
+  await fb.A.sendPasswordResetEmail(fb.auth, email);
+}
+
+// ---------- chats saved in the account: users/<uid>/chats/<chatId> ----------
+function chatData(c) {
+  const clean = JSON.parse(JSON.stringify(c)); // also removes empty (undefined) fields
+  // A Firestore document must stay under 1 MB: keep only the newest website code if it gets too big.
+  let size = JSON.stringify(clean).length;
+  if (size > 900000) {
+    const withSite = clean.messages.filter((m) => m.site);
+    for (const m of withSite.slice(0, -1)) {
+      if (size <= 900000) break;
+      size -= m.site.length; delete m.site;
+    }
+  }
+  while (JSON.stringify(clean).length > 900000 && clean.messages.length > 2) clean.messages.shift();
+  return clean;
+}
+export async function saveChatCloud(c) {
+  if (!fb || !user || !c || !c.id) return;
+  const { F, db } = fb;
+  await F.setDoc(F.doc(db, 'users', user.uid, 'chats', c.id), chatData(c));
+}
+export async function deleteChatCloud(id) {
+  if (!fb || !user) return;
+  const { F, db } = fb;
+  await F.deleteDoc(F.doc(db, 'users', user.uid, 'chats', id));
+}
+export async function loadChatsCloud() {
+  if (!fb || !user) return [];
+  const { F, db } = fb;
+  const q = F.query(F.collection(db, 'users', user.uid, 'chats'), F.orderBy('updated', 'desc'), F.limit(60));
+  const snap = await F.getDocs(q);
+  return snap.docs.map((d) => ({ ...d.data(), id: d.id }));
+}
+
 // Save the website to Firestore. Same id = update the same public link.
 export async function publishSite(html, title, id) {
   const { F, db } = fb;

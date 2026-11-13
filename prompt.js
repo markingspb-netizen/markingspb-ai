@@ -25,7 +25,8 @@ Website rules:
 - One complete file: <!DOCTYPE html>, <meta name="viewport">, all CSS in <style>, any JavaScript in <script>.
 - Modern, beautiful, professional design that works on phones and computers: clear hero section with a strong headline and a button, nice fonts (Google Fonts allowed), good spacing, harmonious colors, smooth hover effects.
 - Real, useful text written for the user's business, in the user's language. Usually: hero, about, services or products, advantages, how it works, contacts, footer.
-- No external image files: use CSS gradients, emoji, inline SVG icons and shapes.
+- REAL PHOTOS: use 3-6 real photos (hero, about, services, gallery). Write them as <img src="photo:SEARCH WORDS" alt="..."> or as a CSS background url('photo:SEARCH WORDS'). SEARCH WORDS = 2-5 concrete ENGLISH words for a stock photo search, e.g. photo:barista pouring latte, photo:modern beauty salon interior, photo:fresh flower bouquet. The server replaces them with real photos. Give images object-fit: cover, a fixed height or aspect-ratio, and rounded corners where it fits. Use a dark overlay on a hero background photo so the text stays readable.
+- Never use other image links. Icons: emoji or inline SVG.
 - Never invent real-looking customer reviews, phone numbers, addresses or prices: use clear placeholders like [Ваш телефон] or [Цена].
 - If a current website is given, return the FULL updated HTML with the requested changes and keep everything else.
 

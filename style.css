@@ -167,3 +167,25 @@ body:not(.empty) .chips { display: none; }
 .spub a { color: #8fd9a8; word-break: break-all; }
 .spub .bad { color: #ff9aa9; }
 .spub:has(.bad) { background: #2a1b1f; }
+
+/* ---------- login window ---------- */
+.login-btn { width: 100%; padding: 10px 12px; border-radius: 10px; border: 0; background: var(--text); color: #111; font-size: 14px; font-weight: 600; }
+.login-btn:hover { background: #fff; }
+.modal-bg { position: fixed; inset: 0; z-index: 70; background: rgba(0, 0, 0, .6); display: grid; place-items: center; padding: 16px; }
+.modal { position: relative; width: min(400px, 100%); background: #262626; border: 1px solid var(--line); border-radius: 20px; padding: 26px 24px 20px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 20px 60px rgba(0, 0, 0, .5); }
+.modal-logo { align-self: center; border-radius: 12px; }
+.modal-x { position: absolute; top: 10px; right: 12px; background: none; border: 0; color: var(--muted); font-size: 24px; line-height: 1; padding: 4px 8px; }
+.tabs { display: flex; background: var(--side); border-radius: 12px; padding: 4px; }
+.tabs button { flex: 1; background: none; border: 0; padding: 9px; border-radius: 9px; color: var(--muted); font-size: 14px; font-weight: 500; }
+.tabs button.on { background: var(--surface2); color: var(--text); }
+.fld { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--muted); }
+.fld input { background: var(--side); border: 1px solid var(--line); border-radius: 10px; padding: 11px 12px; font-size: 16px; color: var(--text); outline: none; }
+.fld input:focus { border-color: var(--accent); }
+.m-msg { font-size: 13.5px; color: #ff9aa9; background: #2a1b1f; border-radius: 10px; padding: 8px 12px; line-height: 1.4; }
+.m-msg.good { color: #8fd9a8; background: #1b2a1f; }
+.m-main { padding: 12px; border-radius: 12px; border: 0; background: linear-gradient(90deg, var(--accent), var(--accent2)); color: #fff; font-size: 15px; font-weight: 600; }
+.m-main:disabled, .modal button:disabled { opacity: .6; }
+.m-link { background: none; border: 0; color: var(--muted); font-size: 13px; text-decoration: underline; align-self: center; padding: 2px; }
+.m-or { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; }
+.m-or::before, .m-or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.m-note { margin: 2px 0 0; text-align: center; color: var(--muted); font-size: 12px; line-height: 1.45; }
