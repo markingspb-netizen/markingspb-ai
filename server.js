@@ -14,7 +14,11 @@ const PORT = process.env.PORT || 3000;
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openrouter/free';
+// Strong free models, tried in this order (OpenRouter switches to the next one if a model is busy).
+// The free list changes often: update it here or with the OPENROUTER_MODELS setting on Render.
+const OPENROUTER_MODELS = (process.env.OPENROUTER_MODELS ||
+  'nvidia/nemotron-3.5-super-vl:free,nvidia/nemotron-3-ultra-550b-a55b:free,nvidia/nemotron-3.5-lightning:free')
+  .split(',').map((m) => m.trim()).filter(Boolean);
 const WHISPER_MODEL = process.env.WHISPER_MODEL || 'whisper-large-v3-turbo';
 const LIMIT_PER_HOUR = Number(process.env.LIMIT_PER_HOUR || 60);
 
@@ -110,7 +114,7 @@ function repairJSON(str) {
 }
 
 function extractJSON(text) {
-  const raw = String(text || '').trim();
+  const raw = String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/^```(?:json)?\s*|\s*```$/g, '').trim();
   const tries = [raw];
   const m = raw.match(/\{[\s\S]*\}/);
   if (m) tries.push(m[0]);
@@ -130,7 +134,8 @@ function extractJSON(text) {
 }
 
 async function chat(url, key, model, messages, jsonMode) {
-  const body = { model, messages, temperature: 0.4, max_tokens: 4000 };
+  const body = { messages, temperature: 0.4, max_tokens: 4000 };
+  if (Array.isArray(model)) body.models = model.slice(0, 3); else body.model = model;
   if (jsonMode) body.response_format = { type: 'json_object' };
   const r = await fetch(url, {
     method: 'POST',
@@ -153,9 +158,14 @@ async function askAI(messages) {
   }
   if (OPENROUTER_API_KEY) {
     try {
-      const out = extractJSON(await chat('https://openrouter.ai/api/v1/chat/completions', OPENROUTER_API_KEY, OPENROUTER_MODEL, messages, true));
+      const out = extractJSON(await chat('https://openrouter.ai/api/v1/chat/completions', OPENROUTER_API_KEY, OPENROUTER_MODELS, messages, false));
       if (out) return out;
       errors.push('openrouter: bad json');
+    } catch (e) { errors.push(e.message); }
+    // Last resort: any free model.
+    try {
+      const out = extractJSON(await chat('https://openrouter.ai/api/v1/chat/completions', OPENROUTER_API_KEY, 'openrouter/free', messages, false));
+      if (out) return out;
     } catch (e) { errors.push(e.message); }
   }
   if (!GROQ_API_KEY && !OPENROUTER_API_KEY) errors.push('No API key. Add GROQ_API_KEY in Render → Environment.');
