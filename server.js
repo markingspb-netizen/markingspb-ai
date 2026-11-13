@@ -16,7 +16,7 @@ const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openrouter/free';
 const WHISPER_MODEL = process.env.WHISPER_MODEL || 'whisper-large-v3-turbo';
-const LIMIT_PER_HOUR = Number(process.env.LIMIT_PER_HOUR || 40);
+const LIMIT_PER_HOUR = Number(process.env.LIMIT_PER_HOUR || 60);
 
 // ---------- static files ----------
 const STATIC = [
@@ -89,19 +89,52 @@ function allowed(req, kind) {
   return true;
 }
 
+// Models sometimes put real line breaks inside JSON strings. Fix that.
+function repairJSON(str) {
+  let out = '', inStr = false, esc = false;
+  for (const ch of str) {
+    if (inStr) {
+      if (esc) { esc = false; out += ch; continue; }
+      if (ch === '\\') { esc = true; out += ch; continue; }
+      if (ch === '"') { inStr = false; out += ch; continue; }
+      if (ch === '\n') { out += '\\n'; continue; }
+      if (ch === '\r') continue;
+      if (ch === '\t') { out += '\\t'; continue; }
+      out += ch;
+    } else {
+      if (ch === '"') inStr = true;
+      out += ch;
+    }
+  }
+  return out;
+}
+
 function extractJSON(text) {
-  try { return JSON.parse(text); } catch { /* look inside */ }
-  const m = String(text).match(/\{[\s\S]*\}/);
-  if (m) { try { return JSON.parse(m[0]); } catch { /* ignore */ } }
+  const raw = String(text || '').trim();
+  const tries = [raw];
+  const m = raw.match(/\{[\s\S]*\}/);
+  if (m) tries.push(m[0]);
+  for (const s of tries) {
+    for (const candidate of [s, repairJSON(s)]) {
+      try {
+        const j = JSON.parse(candidate);
+        if (j && typeof j === 'object' && ('reply' in j || 'operations' in j)) return j;
+      } catch { /* next */ }
+    }
+  }
+  // Not JSON at all: treat the whole text as a normal answer.
+  if (raw && !raw.startsWith('{')) return { reply: raw, operations: [] };
+  const r = raw.match(/"reply"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  if (r) { try { return { reply: JSON.parse('"' + r[1] + '"'), operations: [] }; } catch { /* ignore */ } }
   return null;
 }
 
 async function chat(url, key, model, messages, jsonMode) {
-  const body = { model, messages, temperature: 0.2, max_tokens: 1500 };
+  const body = { model, messages, temperature: 0.4, max_tokens: 4000 };
   if (jsonMode) body.response_format = { type: 'json_object' };
   const r = await fetch(url, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', 'X-Title': 'Markingspb AI' },
     body: JSON.stringify(body),
   });
   if (!r.ok) throw new Error(`${url} -> ${r.status} ${(await r.text()).slice(0, 300)}`);
@@ -120,7 +153,7 @@ async function askAI(messages) {
   }
   if (OPENROUTER_API_KEY) {
     try {
-      const out = extractJSON(await chat('https://openrouter.ai/api/v1/chat/completions', OPENROUTER_API_KEY, OPENROUTER_MODEL, messages, false));
+      const out = extractJSON(await chat('https://openrouter.ai/api/v1/chat/completions', OPENROUTER_API_KEY, OPENROUTER_MODEL, messages, true));
       if (out) return out;
       errors.push('openrouter: bad json');
     } catch (e) { errors.push(e.message); }
@@ -133,12 +166,12 @@ async function askAI(messages) {
 async function handlePlan(req, res) {
   if (!allowed(req, 'plan')) return sendJSON(res, 429, { error: 'limit' });
   let input;
-  try { input = JSON.parse((await readBody(req, 200_000)).toString('utf8')); }
+  try { input = JSON.parse((await readBody(req, 400_000)).toString('utf8')); }
   catch { return sendJSON(res, 400, { error: 'bad_request' }); }
 
-  const message = String(input.message || '').slice(0, 2000);
+  const message = String(input.message || '').slice(0, 8000);
   const v = input.video || null;
-  const history = Array.isArray(input.history) ? input.history.slice(-8) : [];
+  const history = Array.isArray(input.history) ? input.history.slice(-12) : [];
   const context = v
     ? `Current video: duration ${Number(v.duration).toFixed(2)} s, size ${v.width}x${v.height}, has sound: ${v.hasAudio ? 'yes' : 'no'}. Music file attached: ${input.hasMusic ? 'yes' : 'no'}.`
     : 'No video is loaded yet.';
@@ -147,7 +180,7 @@ async function handlePlan(req, res) {
     { role: 'system', content: SYSTEM_PROMPT },
     ...history
       .filter((m) => m && (m.role === 'user' || m.role === 'assistant'))
-      .map((m) => ({ role: m.role, content: String(m.content || '').slice(0, 1000) })),
+      .map((m) => ({ role: m.role, content: String(m.content || '').slice(0, 4000) })),
     { role: 'user', content: `${context}\nRequest: ${message}` },
   ];
 

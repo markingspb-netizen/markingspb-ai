@@ -11,10 +11,12 @@ const T = {
   ru: {
     newChat: 'Новый чат',
     privacy: 'Видео не загружается на сервер — монтаж идёт прямо в вашем браузере.',
-    welcomeTitle: 'Что будем монтировать?',
-    welcomeSub: 'Прикрепите видео 📎 и напишите, что сделать: обрезать, сделать вертикально для Reels, добавить надпись, субтитры, музыку…',
+    welcomeTitle: 'Чем могу помочь?',
+    welcomeSub: 'Спросите что угодно — или прикрепите видео 📎, и я его смонтирую.',
+    recent: 'Чаты', copy: 'Копировать', copied: 'Скопировано ✓', deleteChat: 'Удалить чат',
+    videoNotSaved: 'Видео из прошлых чатов не сохраняются. Прикрепите видео снова, если нужно.',
     addVideo: 'Видео', addMusic: 'Музыка',
-    placeholder: 'Напишите Markingspb AI…',
+    placeholder: 'Спросите что угодно…',
     disclaimer: 'Markingspb AI может ошибаться. Проверяйте результат перед публикацией.',
     dropHere: 'Отпустите видео здесь',
     download: 'Скачать', undo: 'Отменить', undone: 'Отменено ↩',
@@ -32,15 +34,17 @@ const T = {
     musicMissing: 'Чтобы добавить музыку, прикрепите её кнопкой 🎵 Музыка.',
     big: 'Видео большое — монтаж в браузере может быть медленным.',
     busy: 'Подождите, я ещё работаю…',
-    chips: ['Сделай вертикально для Reels', 'Добавь субтитры', 'Обрежь первые 3 секунды', 'Чёрно-белое', 'Надпись сверху «Скидка 20%»', 'Ускорь в 2 раза'],
+    chips: ['Придумай 5 идей для постов в Instagram', 'Напиши рекламный текст для кофейни', 'Объясни простыми словами, что такое воронка продаж', 'Как смонтировать видео для Reels?'],
   },
   en: {
     newChat: 'New chat',
     privacy: 'Your video is not uploaded — editing happens right in your browser.',
-    welcomeTitle: 'What are we editing today?',
-    welcomeSub: 'Attach a video 📎 and tell me what to do: trim it, make it vertical for Reels, add a title, subtitles, music…',
+    welcomeTitle: 'How can I help you today?',
+    welcomeSub: 'Ask me anything — or attach a video 📎 and I will edit it.',
+    recent: 'Chats', copy: 'Copy', copied: 'Copied ✓', deleteChat: 'Delete chat',
+    videoNotSaved: 'Videos from past chats are not saved. Attach the video again if you need it.',
     addVideo: 'Video', addMusic: 'Music',
-    placeholder: 'Message Markingspb AI…',
+    placeholder: 'Ask anything…',
     disclaimer: 'Markingspb AI can make mistakes. Check the result before posting.',
     dropHere: 'Drop your video here',
     download: 'Download', undo: 'Undo', undone: 'Undone ↩',
@@ -58,7 +62,7 @@ const T = {
     musicMissing: 'To add music, attach it with the 🎵 Music button.',
     big: 'This video is large — editing in the browser may be slow.',
     busy: 'Please wait, I am still working…',
-    chips: ['Make it vertical for Reels', 'Add subtitles', 'Cut the first 3 seconds', 'Black and white', 'Add title "Sale 20%" at the top', 'Make it 2x faster'],
+    chips: ['Give me 5 Instagram post ideas', 'Write an ad for a coffee shop', 'Explain a sales funnel in simple words', 'How do I edit a video for Reels?'],
   },
 };
 let lang = 'ru';
@@ -76,7 +80,8 @@ let engineReady = null;
 let logLines = [];
 let versions = [];          // [{ blob, info, card }]
 let musicName = null;
-let history = [];
+let chats = loadChats();     // saved chats (text only)
+let chat = null;             // the open chat: { id, title, messages: [{ role, content }], updated, hadVideo }
 let working = false;
 let progressBar = null;
 
@@ -99,6 +104,7 @@ function applyLang() {
     b.onclick = () => { text.value = c; send(); };
     chips.appendChild(b);
   }
+  if (typeof renderChatList === 'function' && document.getElementById('chatList')) renderChatList();
 }
 
 function toBottom() { requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight; }); }
@@ -147,6 +153,188 @@ function status(label) {
     set(l, withBar = false) { lab.textContent = l; bar.hidden = !withBar; fill.style.width = '0%'; progressBar = withBar ? fill : null; },
     done() { progressBar = null; c.parentElement.remove(); },
   };
+}
+
+// ---------- Markdown (safe: all text is escaped first) ----------
+const esc = (s) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+function inline(raw) {
+  return raw.split(/(`[^`\n]+`)/).map((part, i) => {
+    if (i % 2) return '<code>' + esc(part.slice(1, -1)) + '</code>';
+    return esc(part)
+      .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, '$1<em>$2</em>')
+      .replace(/~~([^~\n]+)~~/g, '<del>$1</del>')
+      .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  }).join('');
+}
+const isUl = (l) => /^\s*[-*•]\s+/.test(l);
+const isOl = (l) => /^\s*\d+[.)]\s+/.test(l);
+const isTableRow = (l) => /^\s*\|.*\|\s*$/.test(l);
+const isTableSep = (l) => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(l);
+const isBlock = (l) => /^```/.test(l) || /^#{1,6}\s/.test(l) || isUl(l) || isOl(l) || /^\s*>/.test(l) || /^\s*(-{3,}|\*{3,})\s*$/.test(l) || isTableRow(l);
+const cells = (l) => l.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => inline(c.trim()));
+function markdown(src) {
+  const lines = String(src).replace(/\r/g, '').split('\n');
+  let html = '', i = 0;
+  while (i < lines.length) {
+    const l = lines[i];
+    let m;
+    if (/^```/.test(l)) {
+      const buf = []; i++;
+      while (i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++]);
+      i++;
+      html += '<pre><button class="copy-code" type="button">⧉</button><code>' + esc(buf.join('\n')) + '</code></pre>';
+    } else if ((m = l.match(/^(#{1,6})\s+(.*)/))) {
+      const n = Math.min(4, m[1].length + 1);
+      html += `<h${n}>${inline(m[2])}</h${n}>`; i++;
+    } else if (isUl(l)) {
+      html += '<ul>';
+      while (i < lines.length && isUl(lines[i])) html += '<li>' + inline(lines[i++].replace(/^\s*[-*•]\s+/, '')) + '</li>';
+      html += '</ul>';
+    } else if (isOl(l)) {
+      const first = parseInt(l, 10) || 1;
+      html += first > 1 ? `<ol start="${first}">` : '<ol>';
+      while (i < lines.length && (isOl(lines[i]) || (/^\s{2,}\S/.test(lines[i]) && !isBlock(lines[i])))) {
+        if (isOl(lines[i])) html += '<li>' + inline(lines[i++].replace(/^\s*\d+[.)]\s+/, '')) + '</li>';
+        else html = html.replace(/<\/li>$/, '<br>' + inline(lines[i++].trim()) + '</li>');
+      }
+      html += '</ol>';
+    } else if (isTableRow(l) && i + 1 < lines.length && isTableSep(lines[i + 1])) {
+      html += '<div class="table-wrap"><table><thead><tr>' + cells(l).map((c) => `<th>${c}</th>`).join('') + '</tr></thead><tbody>';
+      i += 2;
+      while (i < lines.length && isTableRow(lines[i])) html += '<tr>' + cells(lines[i++]).map((c) => `<td>${c}</td>`).join('') + '</tr>';
+      html += '</tbody></table></div>';
+    } else if (/^\s*>/.test(l)) {
+      const buf = [];
+      while (i < lines.length && /^\s*>/.test(lines[i])) buf.push(inline(lines[i++].replace(/^\s*>\s?/, '')));
+      html += '<blockquote>' + buf.join('<br>') + '</blockquote>';
+    } else if (/^\s*(-{3,}|\*{3,})\s*$/.test(l)) {
+      html += '<hr>'; i++;
+    } else if (!l.trim()) {
+      i++;
+    } else {
+      const buf = [l]; i++;
+      while (i < lines.length && lines[i].trim() && !isBlock(lines[i])) buf.push(lines[i++]);
+      html += '<p>' + buf.map(inline).join('<br>') + '</p>';
+    }
+  }
+  return html;
+}
+
+// Show an AI answer with Markdown, a ChatGPT-like typing effect and a Copy button.
+function aiAnswer(reply, { typing = true, kind = '' } = {}) {
+  const c = aiMsg(null, kind);
+  const body = document.createElement('div');
+  body.className = 'md';
+  c.appendChild(body);
+  const finish = () => {
+    body.innerHTML = markdown(reply);
+    body.querySelectorAll('.copy-code').forEach((b) => {
+      b.onclick = () => copyText(b.nextElementSibling.textContent, b, '⧉');
+    });
+    const actions = document.createElement('div');
+    actions.className = 'msg-actions';
+    const cp = document.createElement('button');
+    cp.type = 'button'; cp.className = 'mini'; cp.textContent = '⧉ ' + t('copy');
+    cp.onclick = () => copyText(reply, cp, '⧉ ' + t('copy'));
+    actions.appendChild(cp);
+    c.appendChild(actions);
+    toBottom();
+  };
+  if (!typing || reply.length < 4) { finish(); return Promise.resolve(c); }
+  return new Promise((resolve) => {
+    const step = Math.max(2, Math.ceil(reply.length / 90));
+    let n = 0;
+    const tick = () => {
+      n += step;
+      if (n >= reply.length) { finish(); resolve(c); return; }
+      body.innerHTML = markdown(reply.slice(0, n)) ;
+      if (scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 160) scroll.scrollTop = scroll.scrollHeight;
+      setTimeout(tick, 16);
+    };
+    tick();
+  });
+}
+
+async function copyText(str, btn, label) {
+  try { await navigator.clipboard.writeText(str); }
+  catch {
+    const ta = document.createElement('textarea'); ta.value = str; document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); } catch { /* ignore */ } ta.remove();
+  }
+  btn.textContent = btn.classList.contains('copy-code') ? '✓' : t('copied');
+  setTimeout(() => { btn.textContent = label; }, 1500);
+}
+
+// ---------- saved chats (only text is saved, in this browser) ----------
+function loadChats() {
+  try { const a = JSON.parse(localStorage.getItem('mspb_chats') || '[]'); return Array.isArray(a) ? a : []; } catch { return []; }
+}
+function saveChats() {
+  chats.sort((a, b) => b.updated - a.updated);
+  chats = chats.slice(0, 40);
+  try { localStorage.setItem('mspb_chats', JSON.stringify(chats)); } catch { /* storage full or blocked */ }
+  renderChatList();
+}
+function remember(role, content) {
+  if (!chat) {
+    chat = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), title: '', messages: [], updated: Date.now(), hadVideo: false };
+    chats.unshift(chat);
+  }
+  if (!chat.title && (role === 'user' || role === 'note')) chat.title = content.replace(/\s+/g, ' ').slice(0, 48);
+  chat.messages.push({ role, content: String(content).slice(0, 12000) });
+  if (chat.messages.length > 80) chat.messages = chat.messages.slice(-80);
+  chat.updated = Date.now();
+  saveChats();
+}
+function aiHistory() {
+  return (chat ? chat.messages : []).filter((m) => m.role === 'user' || m.role === 'assistant').slice(-12);
+}
+function renderChatList() {
+  const list = $('chatList');
+  list.innerHTML = '';
+  if (!chats.length) return;
+  const h = document.createElement('div'); h.className = 'side-label'; h.textContent = t('recent');
+  list.appendChild(h);
+  for (const c of chats) {
+    const item = document.createElement('div');
+    item.className = 'chat-item' + (chat && c.id === chat.id ? ' on' : '');
+    const title = document.createElement('button');
+    title.type = 'button'; title.className = 'chat-title'; title.textContent = c.title || '…';
+    title.onclick = () => openChat(c.id);
+    const del = document.createElement('button');
+    del.type = 'button'; del.className = 'chat-del'; del.textContent = '×'; del.title = t('deleteChat');
+    del.onclick = (e) => { e.stopPropagation(); deleteChat(c.id); };
+    item.append(title, del);
+    list.appendChild(item);
+  }
+}
+async function resetVideo() {
+  versions = [];
+  for (const f of ['cur.mp4', 'out.mp4', musicName]) if (f) await ffmpeg.deleteFile(f).catch(() => {});
+  musicName = null; showMusicChip(null);
+}
+async function openChat(id) {
+  if (working) return;
+  const c = chats.find((x) => x.id === id);
+  if (!c) return;
+  await resetVideo();
+  chat = c;
+  thread.innerHTML = '';
+  document.body.classList.remove('empty', 'menu');
+  for (const m of c.messages) {
+    if (m.role === 'user') userMsg(m.content);
+    else if (m.role === 'assistant') aiAnswer(m.content, { typing: false });
+    else if (m.role === 'note') { const n = document.createElement('div'); n.className = 'row note'; n.textContent = m.content; thread.appendChild(n); }
+  }
+  if (c.hadVideo) { const n = document.createElement('div'); n.className = 'row note'; n.textContent = t('videoNotSaved'); thread.appendChild(n); }
+  renderChatList();
+  toBottom();
+}
+function deleteChat(id) {
+  chats = chats.filter((x) => x.id !== id);
+  if (chat && chat.id === id) newChat();
+  saveChats();
 }
 
 function videoCard(version) {
@@ -235,6 +423,8 @@ async function loadVideo(file) {
   name.appendChild(small);
   chip.append(pv, name);
   userMsg(chip);
+  remember('note', '🎬 ' + file.name);
+  if (chat) { chat.hadVideo = true; saveChats(); }
 
   setWorking(true);
   const st = status(t('loadingEngine'));
@@ -245,7 +435,6 @@ async function loadVideo(file) {
     const info = await probe('cur.mp4');
     versions.forEach((v) => v.card && v.card.classList.add('old'));
     versions = [{ blob: file, info, card: null }];
-    history = [];
     st.done();
     if (file.size > 300 * 1048576) aiMsg(t('big'));
     aiMsg(t('videoReady'));
@@ -336,7 +525,9 @@ async function send() {
   if (!message) return;
   if (working) { aiMsg(t('busy')); return; }
   text.value = ''; autosize();
+  const history = aiHistory();
   userMsg(message);
+  remember('user', message);
   const cur = versions.at(-1);
   setWorking(true);
   const st = status(t('thinking'));
@@ -349,16 +540,15 @@ async function send() {
     if (r.status === 429) { st.done(); aiMsg(t('limit'), 'error'); return; }
     if (!r.ok) { st.done(); aiMsg(t('aiError'), 'error'); return; }
     const { reply, operations } = await r.json();
-    history.push({ role: 'user', content: message }, { role: 'assistant', content: reply });
-    history = history.slice(-10);
+    remember('assistant', reply || '…');
 
-    if (!operations.length) { st.done(); aiMsg(reply || '…'); return; }
+    if (!operations.length) { st.done(); await aiAnswer(reply || '…'); return; }
     if (!cur) { st.done(); aiMsg(t('noVideo')); return; }
 
     try {
       const result = await apply(operations, st);
       st.done();
-      const c = aiMsg(reply || '✔');
+      const c = await aiAnswer(reply || '✔');
       if (result) {
         result.card = videoCard(result);
         c.appendChild(result.card);
@@ -381,9 +571,9 @@ async function send() {
 async function newChat() {
   if (working) return;
   thread.innerHTML = '';
-  versions = []; history = [];
-  for (const f of ['cur.mp4', 'out.mp4', musicName]) if (f) await ffmpeg.deleteFile(f).catch(() => {});
-  musicName = null; showMusicChip(null);
+  chat = null;
+  await resetVideo();
+  renderChatList();
   document.body.classList.add('empty');
   document.body.classList.remove('menu');
   text.focus();
@@ -420,4 +610,5 @@ document.querySelectorAll('.lang button').forEach((b) => b.addEventListener('cli
 }));
 
 applyLang();
+renderChatList();
 loadEngine().catch(() => {}); // start downloading the editor in the background
