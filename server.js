@@ -141,6 +141,18 @@ function allowed(req, kind) {
   return true;
 }
 
+// Some models write the website with "\n" and "\"" as text instead of real line breaks and quotes. Repair it.
+function fixHtml(h) {
+  if (!h) return h;
+  const lit = (h.match(/\\n/g) || []).length;
+  const real = (h.match(/\n/g) || []).length;
+  if (lit >= 3 && lit > real) {
+    h = h.replace(/\\r\\n|\\n/g, '\n').replace(/\\r/g, '').replace(/\\t/g, '  ')
+      .replace(/\\"/g, '"').replace(/\\'/g, "'").replace(/\\\//g, '/').replace(/\\\\/g, '\\');
+  }
+  return h.trim();
+}
+
 // Take the website (```html ... ```) out of the answer, before reading the JSON.
 function splitWebsite(text) {
   let raw = String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, '');
@@ -151,7 +163,8 @@ function splitWebsite(text) {
     raw = raw.replace(fence[0], '');
   } else {
     const bare = raw.match(/<!DOCTYPE html[\s\S]*?(?:<\/html>|$)/i);
-    if (bare) { website = bare[0].trim(); raw = raw.replace(bare[0], ''); }
+    // Skip it when the website sits inside a JSON string ("website": "<!DOCTYPE ...): the JSON reader takes it.
+    if (bare && raw[bare.index - 1] !== '"') { website = bare[0].trim(); raw = raw.replace(bare[0], ''); }
   }
   return { rest: raw.trim(), website };
 }
@@ -214,7 +227,14 @@ function parseAnswer(text) {
   const { rest, website } = splitWebsite(text);
   let out = rest ? extractJSON(rest) : null;
   if (!out && website) out = { reply: '', operations: [] };
-  if (out) out.website = website;
+  if (!out) return null;
+  // The website may also come inside the JSON, or inside "reply".
+  let site = website || (typeof out.website === 'string' && out.website) || (typeof out.html === 'string' && out.html) || null;
+  if (!site && typeof out.reply === 'string') {
+    const m = out.reply.match(/```html\s*([\s\S]*?)(?:```|$)/i) || out.reply.match(/<!DOCTYPE html[\s\S]*?(?:<\/html>|$)/i);
+    if (m) { site = m[1] || m[0]; out.reply = out.reply.replace(m[0], '').trim(); }
+  }
+  out.website = site && /<html|<!doctype|<body/i.test(site) ? fixHtml(site) : null;
   return out;
 }
 
